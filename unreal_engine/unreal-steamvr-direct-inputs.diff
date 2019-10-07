@@ -1,0 +1,265 @@
+From 4e9af59e2e79d640dbf0f8bc6f321fa5cab6341c Mon Sep 17 00:00:00 2001
+From: Leo Terziman <leo.terziman@clarte.asso.fr>
+Date: Tue, 12 Mar 2019 13:53:33 +0100
+Subject: [PATCH] Fixed low level input access from SteamVR
+
+---
+ .../SteamVR/Private/SteamVRFunctionLibrary.cpp       | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+index 5879c775a6f..ed51157e505 100644
+--- a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
++++ b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+@@ -118,7 +118,11 @@ bool USteamVRFunctionLibrary::IsPressed(int32 DeviceId, ESteamVRButton Button)
+ 			
+ 			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, sizeof(DeviceState)))
+ 			{
+-				RetVal = (DeviceState.ulButtonPressed & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
++				uint64 mask = 1;
++				
++				mask = (mask << ((uint8) Button));
++				
++				RetVal = (DeviceState.ulButtonPressed & mask) != 0;
+ 			}
+ 		}
+ 	}
+@@ -143,7 +147,11 @@ bool USteamVRFunctionLibrary::IsTouched(int32 DeviceId, ESteamVRButton Button)
+ 			
+ 			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, sizeof(DeviceState)))
+ 			{
+-				RetVal = (DeviceState.ulButtonTouched & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
++				uint64 mask = 1;
++				
++				mask = (mask << ((uint8) Button));
++				
++				RetVal = (DeviceState.ulButtonTouched & mask) != 0;
+ 			}
+ 		}
+ 	}
+-- 
+2.20.1.windows.1
+
+From 87947a00692f77ea573ed8e7554349e9388950d9 Mon Sep 17 00:00:00 2001
+From: Leo Terziman <leo.terziman@clarte.asso.fr>
+Date: Fri, 8 Mar 2019 19:02:06 +0100
+Subject: [PATCH] Fixed calls to OpenVR API
+
+---
+ .../Source/SteamVR/Private/SteamVRFunctionLibrary.cpp       | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+index 066249ca66a..5879c775a6f 100644
+--- a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
++++ b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+@@ -116,7 +116,7 @@ bool USteamVRFunctionLibrary::IsPressed(int32 DeviceId, ESteamVRButton Button)
+ 		{
+ 			vr::VRControllerState_t DeviceState;
+ 			
+-			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, sizeof(DeviceState)))
+ 			{
+ 				RetVal = (DeviceState.ulButtonPressed & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
+ 			}
+@@ -141,7 +141,7 @@ bool USteamVRFunctionLibrary::IsTouched(int32 DeviceId, ESteamVRButton Button)
+ 		{
+ 			vr::VRControllerState_t DeviceState;
+ 			
+-			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, sizeof(DeviceState)))
+ 			{
+ 				RetVal = (DeviceState.ulButtonTouched & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
+ 			}
+@@ -166,7 +166,7 @@ FVector2D USteamVRFunctionLibrary::GetAxis(int32 DeviceId, int32 Axis)
+ 		{
+ 			vr::VRControllerState_t DeviceState;
+ 			
+-			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, sizeof(DeviceState)))
+ 			{
+ 				if(Axis < vr::k_unControllerStateAxisCount)
+ 				{
+-- 
+2.20.1.windows.1
+
+From 80e1e702f6b681ddd04f818bb80d5037cb10f45b Mon Sep 17 00:00:00 2001
+From: Leo Terziman <leo.terziman@clarte.asso.fr>
+Date: Fri, 8 Mar 2019 17:47:20 +0100
+Subject: [PATCH] Added support to SteamVR plugin for low level inputs on a
+ given controller
+
+---
+ .../SteamVR/Classes/SteamVRFunctionLibrary.h  | 59 +++++++++++++
+ .../Private/SteamVRFunctionLibrary.cpp        | 83 +++++++++++++++++++
+ 2 files changed, 142 insertions(+)
+
+diff --git a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Classes/SteamVRFunctionLibrary.h b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Classes/SteamVRFunctionLibrary.h
+index 0ab5a3b5072..785c68182df 100644
+--- a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Classes/SteamVRFunctionLibrary.h
++++ b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Classes/SteamVRFunctionLibrary.h
+@@ -23,6 +23,35 @@ enum class ESteamVRTrackedDeviceType : uint8
+ 	Invalid
+ };
+ 
++/** Defines Ids for buttons */
++UENUM(BlueprintType)
++enum class ESteamVRButton : uint8
++{
++	System = 0,
++	ApplicationMenu = 1,
++	Grip = 2,
++	DPad_Left = 3,
++	DPad_Up = 4,
++	DPad_Right = 5,
++	DPad_Down = 6,
++	A = 7,
++
++	ProximitySensor = 31,
++
++	Axis0 = 32,
++	Axis1 = 33,
++	Axis2 = 34,
++	Axis3 = 35,
++	Axis4 = 36,
++
++	SteamVR_Touchpad = Axis0,
++	SteamVR_Trigger = Axis1,
++
++	Dashboard_Back = Grip,
++
++	Max = 64
++};
++
+ /**
+  * SteamVR Extensions Function Library
+  */
+@@ -64,4 +93,34 @@ public:
+ 	 */
+ 	UFUNCTION(BlueprintPure, Category = "SteamVR", meta = (DeprecatedFunction, DeprecationMessage = "Use motion controller components instead"))
+ 	static bool GetHandPositionAndOrientation(int32 ControllerIndex, EControllerHand Hand, FVector& OutPosition, FRotator& OutOrientation);
++
++	/**
++	 * Returns the pressed state of a given button on a given device
++	 *
++	 * @param	DeviceId	Id of the device to get tracking info for
++	 * @param	Button		Id of the button to check
++	 * @return	True if the button is pressed, false otherwise
++	 */
++	UFUNCTION(BlueprintPure, Category = "SteamVR")
++	static bool IsPressed(int32 DeviceId, ESteamVRButton Button);
++
++	/**
++	 * Returns the touched state of a given button on a given device
++	 *
++	 * @param	DeviceId	Id of the device to get tracking info for
++	 * @param	Button		Id of the button to check
++	 * @return	True if the button is touched, false otherwise
++	 */
++	UFUNCTION(BlueprintPure, Category = "SteamVR")
++	static bool IsTouched(int32 DeviceId, ESteamVRButton Button);
++
++	/**
++	 * Returns the value of a given axis on a given device
++	 *
++	 * @param	DeviceId	Id of the device to get tracking info for
++	 * @param	Axis		Id of the axis to check
++	 * @return	The (x, y) value of the given axis
++	 */
++	UFUNCTION(BlueprintPure, Category = "SteamVR")
++	static FVector2D GetAxis(int32 DeviceId, int32 Axis);
+ };
+diff --git a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+index b78fa55afd5..066249ca66a 100644
+--- a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
++++ b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVR/Private/SteamVRFunctionLibrary.cpp
+@@ -101,3 +101,86 @@ bool USteamVRFunctionLibrary::GetHandPositionAndOrientation(int32 ControllerInde
+ 
+ 	return RetVal;
+ }
++
++bool USteamVRFunctionLibrary::IsPressed(int32 DeviceId, ESteamVRButton Button)
++{
++	bool RetVal = false;
++
++#if STEAMVR_SUPPORTED_PLATFORMS
++	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
++	if (SteamVRHMD)
++	{
++		vr::IVRSystem* VRSystem = SteamVRHMD->GetVRSystem();
++		
++		if (VRSystem)
++		{
++			vr::VRControllerState_t DeviceState;
++			
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			{
++				RetVal = (DeviceState.ulButtonPressed & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
++			}
++		}
++	}
++#endif // STEAMVR_SUPPORTED_PLATFORMS
++
++	return RetVal;
++}
++
++bool USteamVRFunctionLibrary::IsTouched(int32 DeviceId, ESteamVRButton Button)
++{
++	bool RetVal = false;
++
++#if STEAMVR_SUPPORTED_PLATFORMS
++	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
++	if (SteamVRHMD)
++	{
++		vr::IVRSystem* VRSystem = SteamVRHMD->GetVRSystem();
++		
++		if (VRSystem)
++		{
++			vr::VRControllerState_t DeviceState;
++			
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			{
++				RetVal = (DeviceState.ulButtonTouched & vr::ButtonMaskFromId((vr::EVRButtonId) Button)) > 0;
++			}
++		}
++	}
++#endif // STEAMVR_SUPPORTED_PLATFORMS
++
++	return RetVal;
++}
++
++FVector2D USteamVRFunctionLibrary::GetAxis(int32 DeviceId, int32 Axis)
++{
++	FVector2D RetVal;
++
++#if STEAMVR_SUPPORTED_PLATFORMS
++	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
++	if (SteamVRHMD)
++	{
++		vr::IVRSystem* VRSystem = SteamVRHMD->GetVRSystem();
++		
++		if (VRSystem)
++		{
++			vr::VRControllerState_t DeviceState;
++			
++			if(VRSystem->GetControllerState((vr::TrackedDeviceIndex_t) DeviceId, &DeviceState, 1))
++			{
++				if(Axis < vr::k_unControllerStateAxisCount)
++				{
++					RetVal.X = DeviceState.rAxis[Axis].x;
++					RetVal.Y = DeviceState.rAxis[Axis].y;
++				}
++				else
++				{
++					UE_LOG(LogTemp, Error, TEXT("Invalid axis ID %d for device %d"), Axis, DeviceId);
++				}
++			}
++		}
++	}
++#endif // STEAMVR_SUPPORTED_PLATFORMS
++
++	return RetVal;
++}
+-- 
+2.20.1.windows.1
+

@@ -1,0 +1,225 @@
+From 997de8db103d4cff09918b9726e0771f3405dcbf Mon Sep 17 00:00:00 2001
+From: Leo Terziman <leo.terziman@clarte.asso.fr>
+Date: Fri, 8 Mar 2019 16:38:05 +0100
+Subject: [PATCH] Applied patch to SteamVR to support more than 3 Vive trackers
+ (https://forums.unrealengine.com/development-discussion/vr-ar-development/1436515-patch-for-vive-trackers-support)
+
+---
+ .../Private/SteamVRController.cpp             | 115 +++++++++++-------
+ 1 file changed, 68 insertions(+), 47 deletions(-)
+
+diff --git a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVRController/Private/SteamVRController.cpp b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVRController/Private/SteamVRController.cpp
+index 8f7741b6299..975ffd424ee 100644
+--- a/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVRController/Private/SteamVRController.cpp
++++ b/Engine/Plugins/Runtime/Steam/SteamVR/Source/SteamVRController/Private/SteamVRController.cpp
+@@ -26,7 +26,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogSteamVRController, Log, All);
+ /** Total number of controllers in a set */
+ #define CONTROLLERS_PER_PLAYER	2
+ 
+-#define MAX_TRACKED_DEVICES (int32)EControllerHand::Special_9 - (int32)EControllerHand::Left + 1
++/** Number of EControllerHand values */
++#define MAX_TRACKED_DEVICES (int32)EControllerHand::Special_11 + 1
+ 
+ /** Player that generic trackers will be assigned to */
+ #define GENERIC_TRACKER_PLAYER_NUM 0
+@@ -89,6 +90,11 @@ namespace SteamVRControllerKeys
+ 	const FKey SteamVR_Knuckles_Right_MiddleGrip("SteamVR_Knuckles_Right_MiddleGrip");
+ 	const FKey SteamVR_Knuckles_Right_RingGrip("SteamVR_Knuckles_Right_RingGrip");
+ 	const FKey SteamVR_Knuckles_Right_PinkyGrip("SteamVR_Knuckles_Right_PinkyGrip");
++
++	const FKey Steam_Generic_Grip("Steam_Generic_Grip");
++	const FKey Steam_Generic_Trigger("Steam_Generic_Trigger");
++	const FKey Steam_Generic_Touchpad("Steam_Generic_Touchpad");
++	const FKey Steam_Generic_Menu("Steam_Generic_Menu");
+ }
+ 
+ class FSteamVRController : public IInputDevice, public FXRMotionControllerBase, public IHapticDevice
+@@ -173,6 +179,8 @@ public:
+ 		InitialButtonRepeatDelay = 0.2f;
+ 		ButtonRepeatDelay = 0.1f;
+ 
++		NextFreeTrackerHand = (int32)EControllerHand::Special_1;
++
+ 		Buttons[ (int32)EControllerHand::Left ][ ESteamVRControllerButton::System ] = FGamepadKeyNames::SpecialLeft;
+ 		Buttons[ (int32)EControllerHand::Left ][ ESteamVRControllerButton::ApplicationMenu ] = FGamepadKeyNames::MotionController_Left_Shoulder;
+ 		Buttons[ (int32)EControllerHand::Left ][ ESteamVRControllerButton::TouchPadPress ] = FGamepadKeyNames::MotionController_Left_Thumbstick;
+@@ -223,7 +231,7 @@ public:
+ 		Buttons[(int32)EControllerHand::Gun][ESteamVRControllerButton::TouchPadLeft] = FGamepadKeyNames::Invalid;
+ 		Buttons[(int32)EControllerHand::Gun][ESteamVRControllerButton::TouchPadRight] = FGamepadKeyNames::Invalid;
+ 
+-		for (int32 SpecialIndex = (int32)EControllerHand::Special_1; SpecialIndex <= (int32)EControllerHand::Special_9; ++SpecialIndex)
++		for (int32 SpecialIndex = (int32)EControllerHand::Special_1; SpecialIndex < MAX_TRACKED_DEVICES; ++SpecialIndex)
+ 		{
+ 			Buttons[SpecialIndex][ESteamVRControllerButton::System] = SteamVRControllerKeyNames::GenericSystem;
+ 			Buttons[SpecialIndex][ESteamVRControllerButton::ApplicationMenu] = SteamVRControllerKeyNames::GenericMenu;
+@@ -249,6 +257,12 @@ public:
+ 		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Knuckles_Right_RingGrip, LOCTEXT("SteamVR_Knuckles_Right_RingGrip", "SteamVR Knuckles (R) Ring Grip CapSense"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+ 		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::SteamVR_Knuckles_Right_PinkyGrip, LOCTEXT("SteamVR_Knuckles_Right_PinkyGrip", "SteamVR Knuckles (R) Pinky Grip CapSense"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis));
+ 
++		// Steam VR Controller specific (Trackers)
++		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::Steam_Generic_Grip, LOCTEXT("Steam_Generic_Grip", "Steam Generic Grip"), FKeyDetails::GamepadKey));
++		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::Steam_Generic_Trigger, LOCTEXT("Steam_Generic_Trigger", "Steam Generic Trigger"), FKeyDetails::GamepadKey));
++		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::Steam_Generic_Touchpad, LOCTEXT("Steam_Generic_Touchpad", "Steam Generic Touchpad"), FKeyDetails::GamepadKey));
++		EKeys::AddKey(FKeyDetails(SteamVRControllerKeys::Steam_Generic_Menu, LOCTEXT("Steam_Generic_Menu", "Steam Generic Menu"), FKeyDetails::GamepadKey));
++
+ 		IModularFeatures::Get().RegisterModularFeature(GetModularFeatureName(), this);
+ #endif // STEAMVRCONTROLLER_SUPPORTED_PLATFORMS
+ 	}
+@@ -417,13 +431,20 @@ public:
+ 								const FGamepadKeyNames::Type ButtonId = Buttons[(uint8)HandToUse][ButtonIndex];
+ 								if (ButtonId != FGamepadKeyNames::Invalid)
+ 								{
+-									if (CurrentStates[ButtonIndex])
++									if (ButtonId.IsNone())
+ 									{
+-										MessageHandler->OnControllerButtonPressed(ButtonId, ControllerIndex, /*IsRepeat =*/false);
++										UE_LOG(LogSteamVRController, Warning, TEXT("Bad events mapping for PlayerIndex %i and tracked device %i (unreal hand is %i). Button Index is %i."), (int32)ControllerIndex, DeviceIndex, (int32)HandToUse, ButtonIndex);
+ 									}
+ 									else
+ 									{
+-										MessageHandler->OnControllerButtonReleased(ButtonId, ControllerIndex, /*IsRepeat =*/false);
++										if (CurrentStates[ButtonIndex])
++										{
++											MessageHandler->OnControllerButtonPressed(ButtonId, ControllerIndex, /*IsRepeat =*/false);
++										}
++										else
++										{
++											MessageHandler->OnControllerButtonReleased(ButtonId, ControllerIndex, /*IsRepeat =*/false);
++										}
+ 									}
+ 								}
+ 
+@@ -449,7 +470,14 @@ public:
+ 						const FGamepadKeyNames::Type ButtonId = Buttons[(uint8)HandToUse][ButtonIndex];
+ 						if (ButtonId != FGamepadKeyNames::Invalid)
+ 						{
+-							MessageHandler->OnControllerButtonPressed(ButtonId, ControllerIndex, /*IsRepeat =*/true);
++							if (ButtonId.IsNone())
++							{
++								UE_LOG(LogSteamVRController, Warning, TEXT("Bad events mapping for PlayerIndex %i and tracked device %i (unreal hand is %i). Button Index is %i."), (int32)ControllerIndex, DeviceIndex, (int32)HandToUse, ButtonIndex);
++							}
++							else
++							{
++								MessageHandler->OnControllerButtonPressed(ButtonId, ControllerIndex, /*IsRepeat =*/true);
++							}
+ 						}
+ 
+ 						// set the button's NextRepeatTime to the ButtonRepeatDelay
+@@ -842,52 +870,34 @@ private:
+ 		// add the tracker to player 0
+ 		DeviceToControllerMap[DeviceIndex] = GENERIC_TRACKER_PLAYER_NUM;
+ 
++		int32 AssignedHand = MAX_TRACKED_DEVICES;
++
+ 		// select next special #
+-		switch (NumTrackersMapped)
++		if (NextFreeTrackerHand < AssignedHand)
++		{
++			AssignedHand = NextFreeTrackerHand++;
++			ControllerStates[DeviceIndex].Hand = (EControllerHand)AssignedHand;
++		}
++		else
+ 		{
+-		case 0:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_1;
+-			break;
+-		case 1:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_2;
+-			break;
+-		case 2:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_3;
+-			break;
+-		case 3:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_4;
+-			break;
+-		case 4:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_5;
+-			break;
+-		case 5:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_6;
+-			break;
+-		case 6:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_7;
+-			break;
+-		case 7:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_8;
+-			break;
+-		case 8:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_9;
+-			break;
+-		case 9:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_10;
+-			break;
+-		case 10:
+-			ControllerStates[DeviceIndex].Hand = EControllerHand::Special_11;
+-			break;
+-		default:
+ 			// initial mapping verification above should catch any erroneous NumTrackersMapped
+ 			check(false);
+-			break;
++		}
++
++		// make sure next tracker hand isn't already mapped
++		for (int ControllerState = 0; ControllerState < vr::k_unMaxTrackedDeviceCount; ++ControllerState)
++		{
++			// if current or larger value is in use: select next
++			if ((int32)ControllerStates[ControllerState].Hand >= NextFreeTrackerHand)
++			{
++				NextFreeTrackerHand = (int32)ControllerStates[ControllerState].Hand + 1;
++			}
+ 		}
+ 
+ 		++NumTrackersMapped;
+-		UE_LOG(LogSteamVRController, Log, TEXT("Tracker device %i is being assigned unreal hand: Special %i, for player %i"), DeviceIndex, NumTrackersMapped, GENERIC_TRACKER_PLAYER_NUM);
++		UE_LOG(LogSteamVRController, Log, TEXT("Tracker device %i is being assigned unreal hand: Special %i, for player %i"), DeviceIndex, AssignedHand - (int32)EControllerHand::Special_1 + 1, GENERIC_TRACKER_PLAYER_NUM);
+ 
+-		UnrealControllerIdAndHandToDeviceIdMap[DeviceToControllerMap[DeviceIndex]][(int32)ControllerStates[DeviceIndex].Hand] = DeviceIndex;
++		UnrealControllerIdAndHandToDeviceIdMap[DeviceToControllerMap[DeviceIndex]][AssignedHand] = DeviceIndex;
+ 
+ 		return true;
+ 	}
+@@ -901,6 +911,14 @@ private:
+ 
+ 	void UnregisterTracker(uint32 DeviceIndex)
+ 	{
++		UE_LOG(LogSteamVRController, Log, TEXT("Tracker device %i is freeing unreal hand: Special %i, for player %i"), DeviceIndex, (int32)ControllerStates[DeviceIndex].Hand - (int32)EControllerHand::Special_1 + 1, GENERIC_TRACKER_PLAYER_NUM);
++
++		// update free tracker hand
++		if (NextFreeTrackerHand > (int32)ControllerStates[DeviceIndex].Hand)
++		{
++			NextFreeTrackerHand = (int32)ControllerStates[DeviceIndex].Hand;
++		}
++
+ 		UnregisterDevice(DeviceIndex);
+ 		NumTrackersMapped--;
+ 	}
+@@ -952,11 +970,11 @@ private:
+ 	int32 NumControllersMapped;
+ 	int32 NumTrackersMapped;
+ 	int32 DeviceToControllerMap[ vr::k_unMaxTrackedDeviceCount ];
+-	int32 UnrealControllerIdAndHandToDeviceIdMap[ MaxUnrealControllers ][ vr::k_unMaxTrackedDeviceCount ];
++	int32 UnrealControllerIdAndHandToDeviceIdMap[ MaxUnrealControllers ][ MAX_TRACKED_DEVICES ];
+ 	int32 UnrealControllerHandUsageCount[CONTROLLERS_PER_PLAYER];
+ 
+ 	/** Controller states */
+-	FControllerState ControllerStates[ MaxControllers ];
++	FControllerState ControllerStates[ vr::k_unMaxTrackedDeviceCount ];
+ 
+ 	/** Delay before sending a repeat message after a button was first pressed */
+ 	float InitialButtonRepeatDelay;
+@@ -964,8 +982,11 @@ private:
+ 	/** Delay before sending a repeat message after a button has been pressed for a while */
+ 	float ButtonRepeatDelay;
+ 
++	/** Next free EControllerHand available for tracker */
++	int32 NextFreeTrackerHand;
++
+ 	/** Mapping of controller buttons */
+-	FGamepadKeyNames::Type Buttons[ vr::k_unMaxTrackedDeviceCount ][ ESteamVRControllerButton::TotalButtonCount ];
++	FGamepadKeyNames::Type Buttons[ MAX_TRACKED_DEVICES ][ ESteamVRControllerButton::TotalButtonCount ];
+ 
+ 	/** weak pointer to the IVRSystem owned by the HMD module */
+ 	TWeakPtr<vr::IVRSystem> HMDVRSystem;
+-- 
+2.20.1.windows.1
+
